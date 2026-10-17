@@ -1,7 +1,9 @@
 ﻿using Microsoft.Extensions.Configuration;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
+using Microsoft.SemanticKernel.Connectors.Ollama;
 using Microsoft.SemanticKernel.Connectors.OpenAI;
+using OllamaSharp;
 
 namespace Semantic_Kernel_App
 {
@@ -17,25 +19,26 @@ namespace Semantic_Kernel_App
                 .AddUserSecrets<Program>()
                 .Build();
 
-            string modelId = config["AzureAI_Cre:modelId"];
-            string endpoint = config["AzureAI_Cre:endpoint"];
-            string apiKey = config["AzureAI_Cre:apiKey"];
+            string modelId = config["Ollama_Cre:modelId"];
+            string endpoint = config["Ollama_Cre:endpoint"];
+            //string apiKey = config["Ollama_Cre:apiKey"];
+
+            //var chatCompletionService=new OllamaApiClient(new Uri(endpoint), modelId).AsChatCompletionService();
 
             var builder = Kernel.CreateBuilder();
-            builder.AddAzureOpenAIChatCompletion(modelId, endpoint, apiKey);
-            Kernel kernel = builder.Build();
+            var ollama = new OllamaApiClient(new Uri(endpoint), modelId);
 
-            var history = new ChatHistory();
-
-            // Get the chat completion service from the kernel
+            builder.AddOllamaChatCompletion(modelId, new Uri(endpoint));
+            var kernel = builder.Build();
             var chatCompletionService = kernel.GetRequiredService<IChatCompletionService>();
 
+            // Create Chat History
+            var history = new ChatHistory(systemMessage: "You are a helpful assistant that provides concise and accurate answers to user questions.");
+
             // Define the settings for the OpenAI prompt execution
-            OpenAIPromptExecutionSettings settings = new()
+            OllamaPromptExecutionSettings settings = new()
             {
-                ChatSystemPrompt = "You are a helpful assistant that provides concise and accurate answers to user questions.",
-                Temperature = 0.9,
-                MaxTokens = 100,
+                Temperature = 0.9f
             };
 
             var reducer = new ChatHistoryTruncationReducer(targetCount: 10);
@@ -51,21 +54,25 @@ namespace Semantic_Kernel_App
                 if (string.IsNullOrWhiteSpace(prompt))
                     break;
 
-                //// Get the chat response from the assistant without ChatHistory
-                //var response = await chatCompletionService.GetChatMessageContentAsync(prompt, settings);
+                string fullMessage = "";
+                OpenAI.Chat.ChatTokenUsage usage = null;
 
-                // Get the chat response from the assistant with ChatHistory
                 history.AddUserMessage(prompt);
-                var response = await chatCompletionService.GetChatMessageContentAsync(history, settings);
-                history.Add(response);
-
-                Console.WriteLine($"Assistant: {response.Content}");
-
-                var reducerMessage = await reducer.ReduceAsync(history);
-                if (reducerMessage is not null)
+                // Get streaming response from chat completion service
+                await foreach (StreamingChatMessageContent responseChunk in chatCompletionService.GetStreamingChatMessageContentsAsync(history, settings))
                 {
-                    history = new(reducerMessage);
+                    // Print response to console
+                    Console.Write(responseChunk.Content);
+                    fullMessage += responseChunk.Content;
                 }
+                // Add response to chat history
+                history.AddAssistantMessage(fullMessage);
+
+                // Reduce chat history if necessary
+                var reduceMessages = await reducer.ReduceAsync(history);
+                if (reduceMessages is not null)
+                    history = new(reduceMessages);
+
             }
         }
     }
